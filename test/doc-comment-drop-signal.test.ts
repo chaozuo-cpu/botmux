@@ -314,4 +314,35 @@ describe('processCommentEvent 的接线点（源码形状）', () => {
   it('removeDocSubscription 只在那一个闭包里被调用，没有旁路', () => {
     expect(region.match(/removeDocSubscription\(/g) ?? []).toHaveLength(1);
   });
+
+
+  /**
+   * 运行态观测：六个丢弃出口 + 一个真接纳成功各记一种结局。dispatched 只能在
+   * daemon 真接纳（accepted）后记，未接纳落 pending 重试，提前记成功是假结局。
+   */
+  it('六个丢弃出口各记对应结局：no-comment / trigger-missing / self-authored / not-mentioned / empty-text / audit-rejected', () => {
+    for (const outcome of ['no-comment', 'trigger-missing', 'self-authored', 'not-mentioned', 'empty-text', 'audit-rejected']) {
+      expect(region).toContain(`noteOutcome('${outcome}')`);
+    }
+  });
+
+  it("dispatched 只在 handleDocComment 真接纳（accepted=true）后记，且在 WS settle 之后", () => {
+    expect(region).toContain("if (accepted) noteOutcome('dispatched')");
+    expect(region.indexOf("if (accepted) noteOutcome('dispatched')")).toBeGreaterThan(
+      region.indexOf('const retryOutcome = settleDocCommentWsDelivery('),
+    );
+    expect(region.indexOf("noteOutcome('dispatched')")).toBeGreaterThan(
+      region.indexOf('accepted = await handlers.handleDocComment(delivery)'),
+    );
+  });
+
+  it('标题补齐 fire-and-forget 且不 await（热路径不能为显示字段插同步往返）', () => {
+    expect(region).toContain('void fetchDocTitle(');
+  });
+
+  it('auto-sub 占位带溯源三字段（陌生人 @ 出来的订阅要能事后审计是谁触发的）', () => {
+    const autoSubRegion = regionBetween('const autoSub: DocSubscription = {', 'putDocSubscription(config.session.dataDir, larkAppId, autoSub)');
+    expect(autoSubRegion).toContain('autoCreated: true');
+    expect(autoSubRegion).toContain('autoCreatedBy: operatorOpenId');
+  });
 });

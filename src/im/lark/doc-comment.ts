@@ -179,6 +179,36 @@ export async function resolveDocFile(larkAppId: string, input: string): Promise<
   return { fileToken: ref.token, fileType: pathKindToFileType(ref.kind) };
 }
 
+/**
+ * 取文档标题（best-effort，给列表/看板显示用）。
+ *
+ * 订阅表主键是 file_token，人眼认不出是哪篇文档；`docTitle` 字段若没人写，列表
+ * 就只能回退显示 token 前 12 位。拿不到一律返回 undefined、**绝不抛**：标题只是
+ * 显示用，不能让取标题失败挡住订阅登记或评论投递。飞书对 token/type 不匹配在
+ * `failed_list` 里给 970005 而非顶层错误，所以这里只认 `metas[0].title`，其它形态
+ * 一律降级 undefined。
+ */
+export async function fetchDocTitle(
+  larkAppId: string,
+  file: ResolvedDocFile,
+): Promise<string | undefined> {
+  try {
+    const res = await driveApiCall(larkAppId, {
+      method: 'POST',
+      path: '/open-apis/drive/v1/metas/batch_query',
+      data: {
+        request_docs: [{ doc_token: file.fileToken, doc_type: file.fileType }],
+      },
+    });
+    if (res?.code !== 0) return undefined;
+    const title = res?.data?.metas?.[0]?.title;
+    return typeof title === 'string' && title.trim() ? title.trim() : undefined;
+  } catch (err) {
+    logger.debug(`[doc-comment] fetchDocTitle failed for ${file.fileToken.slice(0, 12)}: ${err instanceof Error ? err.message : err}`);
+    return undefined;
+  }
+}
+
 // ─── 通用调用：优先 user token，回退 tenant ─────────────────────────────────────
 
 interface DriveCallOpts {

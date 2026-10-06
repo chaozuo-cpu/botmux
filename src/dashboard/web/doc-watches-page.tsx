@@ -153,6 +153,7 @@ function AddForm(props: {
         <div className="dw-field">
           <span>机器人</span>
           <DropdownMenu<string>
+            className="dw-bot-select"
             ariaLabel="选择机器人"
             disabled={props.busy || props.bots.length === 0}
             label={props.bots.find(b => b.larkAppId === props.selectedBot)?.botName || props.selectedBot || '选择机器人'}

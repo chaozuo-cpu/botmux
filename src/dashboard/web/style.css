@@ -35434,3 +35434,25 @@ a.card-menu-item {
   color: var(--fg-3);
   font-size: var(--fs-12);
 }
+
+/* doc-watches 机器人选择器：55 个 bot 名字很长，全局下拉触发器 value 限宽 92px、
+   弹层 min-width 156px 会截断（「Botmux开发(Claude@」）。只在本页放宽，不改全局。 */
+.dw-bot-select .sect-sort-value {
+  max-width: 220px;
+}
+.dw-bot-select > .sect-sort-pop {
+  /* 比全局 156px 宽，容纳最长 bot 名；仍受视口放置逻辑的 max-height 约束。 */
+  min-width: 260px;
+  width: max-content;
+  max-width: min(360px, 80vw);
+  left: 0;
+  right: auto;
+  transform: none;
+}
+.dw-bot-select > .sect-sort-pop button {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+}

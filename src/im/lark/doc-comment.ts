@@ -164,11 +164,28 @@ export async function resolveDocFile(larkAppId: string, input: string): Promise<
     // is how the file token is obtained, so there is no subscription to look an
     // owner up by yet. Resolution runs before any subscription exists (and for
     // documents that never get one), so it uses the bot's own identity.
-    const res = await driveApiCall(larkAppId, {
-      method: 'GET',
-      path: '/open-apis/wiki/v2/spaces/get_node',
-      params: { token: ref.token, obj_type: 'wiki' },
-    });
+    let res: any;
+    try {
+      res = await driveApiCall(larkAppId, {
+        method: 'GET',
+        path: '/open-apis/wiki/v2/spaces/get_node',
+        params: { token: ref.token, obj_type: 'wiki' },
+      });
+    } catch (error) {
+      // get_node 最常见失败是**该 bot 不在这篇知识空间/节点的可读范围**（飞书
+      // code 131006）。不是链接坏了：换一个被授权的 bot、或把当前 bot 加进文档
+      // 协作者即可。把原始 400 吞成通用「无法解析」会让用户无从下手，这里把飞书
+      // code/msg 翻成可操作提示继续抛。
+      const data = (error as any)?.response?.data ?? (error as any)?.data;
+      const code = data?.code ?? (error as any)?.code;
+      if (code === 131006) {
+        throw new Error('当前机器人没有这篇文档的读取权限（飞书 131006）。请换一个被授权的机器人，或在文档里把本机器人加为协作者后再试。');
+      }
+      if (typeof data?.msg === 'string' && data.msg) {
+        throw new Error(`读取 wiki 节点失败（飞书 ${code ?? '?'}）：${data.msg}`);
+      }
+      throw error;
+    }
     const node = res?.data?.node;
     if (!node?.obj_token || !node?.obj_type) {
       throw new Error(`wiki 节点 ${ref.token} 解析失败（缺 obj_token/obj_type）`);

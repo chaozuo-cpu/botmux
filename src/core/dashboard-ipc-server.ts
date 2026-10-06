@@ -6002,15 +6002,17 @@ ipcRoute('PUT', '/api/doc-watches/:fileToken', async (req, res, p) => {
   }
   const existing = getDocSubscription(config.session.dataDir, cachedLarkAppId, p.fileToken);
   if (!existing) return jsonRes(res, 404, { ok: false, error: 'unknown_doc_watch' });
-  if (!setCommentTriggerMode(config.session.dataDir, cachedLarkAppId, p.fileToken, mode)) {
-    return jsonRes(res, 404, { ok: false, error: 'unknown_doc_watch' });
-  }
-  // 切到 'all' 必须先重建轮询基线：mention-only 从不进轮询、游标可能极旧，不重置
-  // poller 会把全部历史评论当新评论一次性重放。先清游标（这步失败时 mode 仍是
-  // mention-only、不进轮询，无重放窗口），交给 poller 既有建基线分支，而不是自取
-  // latest（取失败会退化成重放全部历史）。
+  // 切到 'all' 必须**先清游标、后改 mode**：mention-only 从不进轮询、游标可能极旧，
+  // 若先改 mode 后清游标，两步不是一次原子写，一旦前者成功后者失败（ENOSPC/EIO），
+  // 会留下「mode=all + 陈旧游标 + baselineReady=true」，poller 下一轮就从远古游标
+  // 重放全部历史。先清游标则失败时 mode 仍是 mention-only、根本不进轮询，无重放窗口；
+  // 在 mention-only 上清游标本身也无害（那个模式不读游标）。基线交给 poller 既有建
+  // 基线分支重建，而不是在这里自取 latest（取失败会退化成重放全部历史）。
   if (mode === 'all' && existing.commentTriggerMode !== 'all') {
     setDocCommentPollCursor(config.session.dataDir, cachedLarkAppId, p.fileToken, undefined, false);
+  }
+  if (!setCommentTriggerMode(config.session.dataDir, cachedLarkAppId, p.fileToken, mode)) {
+    return jsonRes(res, 404, { ok: false, error: 'unknown_doc_watch' });
   }
   const updated = getDocSubscription(config.session.dataDir, cachedLarkAppId, p.fileToken);
   if (!updated) return jsonRes(res, 404, { ok: false, error: 'unknown_doc_watch' });

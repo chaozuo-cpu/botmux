@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +16,7 @@ vi.mock('@larksuiteoapi/node-sdk', () => ({ Client: class {
 import {
   initWorkerPool, setActiveSessionsRegistry, getActiveSessionsRegistry,
   __testOnly_deliverFinalOutput as deliverFinalOutput,
+  __testOnly_setupWorkerHandlers,
 } from '../src/core/worker-pool.js';
 import { updateTurnReplyCard } from '../src/core/turn-reply-card.js';
 import { registerBot } from '../src/bot-registry.js';
@@ -26,6 +28,7 @@ import { getTurnResultRuntime, setTurnResultRuntime } from '../src/core/turn-res
 import { observeTurnResultTerminal } from '../src/core/turn-result-session.js';
 import { TopicSendError } from '../src/cli/topic-send-guard.js';
 import { TurnReplyCardStore } from '../src/services/turn-reply-card.js';
+import * as sessionStore from '../src/services/session-store.js';
 
 const APP = 'cli_worker_topic_output';
 const oldDataDir = config.session.dataDir;
@@ -49,7 +52,8 @@ beforeEach(() => {
     workerGeneration: 1,
     currentReplyTarget: { turnId: 'turn-new', rootMessageId: 'om_new' },
     session: { sessionId: 'sid_worker_output', larkAppId: APP, chatId: 'oc_source', scope: 'chat',
-      rootMessageId: 'om_source', cliId: 'claude-code', status: 'active', title: 'source', workingDir: data, workerGeneration: 1 },
+      rootMessageId: 'om_source', cliId: 'claude-code', status: 'active', title: 'source', workingDir: data, workerGeneration: 1,
+      turnReplyContexts: { om_turn_old: { target: { mode: 'thread', rootMessageId: 'om_source' }, sourceMessageId: 'om_turn_old' } } },
   } as unknown as DaemonSession;
   activeSessions.set(activeSessionKey(ds), ds);
   initWorkerPool({ sessionReply, getSessionWorkingDir: () => data, getActiveCount: () => 1, closeSession: vi.fn() });
@@ -79,6 +83,26 @@ function final(target?: FrozenSessionReplyTarget, owns: () => boolean = () => tr
 }
 
 describe('worker final-output topic transport', () => {
+  it('uses the actual worker terminal handler only for an admitted IM input', async () => {
+    sessionStore.init(APP);
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'traex',
+      turnResults: { enabled: true }, replyCardMode: 'legacy' });
+    const worker = Object.assign(new EventEmitter(), { pid: process.pid, send: () => true,
+      stdout: new EventEmitter(), stderr: new EventEmitter(), killed: false, kill: () => true });
+    ds.worker = worker as never;
+    ds.session.cliId = 'traex';
+    ds.session.status = 'active';
+    __testOnly_setupWorkerHandlers(ds, ds.worker!, undefined, 1);
+    worker.emit('message', { type: 'turn_terminal', sessionId: ds.session.sessionId, turnId: 'om_synthetic',
+      status: 'completed', outputDisposition: 'nothing_to_send' });
+    worker.emit('message', { type: 'turn_terminal', sessionId: ds.session.sessionId, turnId: 'om_turn_old',
+      status: 'completed', outputDisposition: 'nothing_to_send' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_synthetic')).toEqual({ status: 'not_found' });
+    const lookup = getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old');
+    expect(lookup?.status === 'ready' && lookup.result.source.messageId).toBe('om_turn_old');
+    expect(lookup?.status === 'ready' && lookup.result.output).toEqual({ status: 'empty' });
+  });
   it('preserves the original explicit final instead of the subsequent transcript', async () => {
     registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
       turnResults: { enabled: true }, replyCardMode: 'unified' });
@@ -88,11 +112,11 @@ describe('worker final-output topic transport', () => {
     }, (body, type, uuid) => sessionReply('oc_source', body, type, APP, 'om_turn_old', { uuid, sourceSessionId: ds.session.sessionId, replyTarget: target }));
     observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId, turnId: 'om_turn_old', status: 'completed' }, 1);
     const beforeFallback = getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old');
-    expect(beforeFallback?.status === 'ready' && beforeFallback.result.output.content).toBe('already delivered final');
+    expect(beforeFallback?.status).toBe('not_ready');
     await final(target, () => true, 'different transcript');
     const lookup = getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old');
-    expect(lookup?.status === 'ready' && lookup.result.output.content).toBe('already delivered final');
-    expect(lookup?.status === 'ready' && lookup.result.output.source).toBe('explicit');
+    expect(lookup?.status === 'ready' && lookup.result.output).toEqual({ status: 'unavailable', reason: 'explicit_publication_unproven' });
+    expect(lookup?.status === 'ready' && lookup.result.deliveries[0].status).toBe('unknown');
   });
 
   it('collects an acknowledged explicit record from another sender only after the native terminal', async () => {
@@ -100,7 +124,7 @@ describe('worker final-output topic transport', () => {
       turnResults: { enabled: true }, replyCardMode: 'unified' });
     const store = new TurnReplyCardStore(config.session.dataDir);
     const key = { larkAppId: APP, sessionId: ds.session.sessionId, turnId: 'om_turn_old' };
-    await store.prepare(key, { mode: 'unified', chatId: ds.chatId, rootId: 'om_source' });
+    await store.prepare(key, { mode: 'unified', chatId: ds.chatId, rootId: ds.chatId });
     await store.update(key, { kind: 'final', text: 'explicit sender final', source: 'explicit',
       card: '{"schema":"2.0","body":{"elements":[{"tag":"markdown","content":"explicit sender final"}]}}' }, {
       beforeEffect: () => {}, render: record => record.finalCard!, send: async () => 'om_explicit',
@@ -109,8 +133,64 @@ describe('worker final-output topic transport', () => {
     expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old').status).toBe('not_found');
     observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId, turnId: 'om_turn_old', status: 'completed' }, 1);
     const lookup = getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old');
-    expect(lookup?.status === 'ready' && lookup.result.output.content).toBe('explicit sender final');
-    expect(lookup?.status === 'ready' && lookup.result.deliveries[0].messages).toEqual([{ kind: 'primary', messageId: 'om_explicit' }]);
+    expect(lookup?.status).toBe('not_ready');
+  });
+
+  it.each(['local-headless-example', 'trg_http', 'om_settled_http'])('does not classify %s as an ordinary IM input', turnId => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
+      turnResults: { enabled: true }, replyCardMode: 'legacy' });
+    ds.session.turnReplyContexts = { [turnId]: { target: { mode: 'thread', rootMessageId: 'om_source' } } };
+    if (turnId === 'om_settled_http') ds.settledHttpTerminalTurns = new Set([turnId]);
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId, turnId,
+      status: 'completed', outputDisposition: 'nothing_to_send' }, 1);
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, turnId)).toEqual({ status: 'not_found' });
+  });
+
+  it('does not treat a synthetic message-shaped turn with a reply context as IM admission', () => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
+      turnResults: { enabled: true }, replyCardMode: 'legacy' });
+    ds.session.turnReplyContexts = { om_synthetic: { target: { mode: 'thread', rootMessageId: 'om_source' } } };
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_synthetic', status: 'completed', outputDisposition: 'nothing_to_send' }, 1);
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_synthetic')).toEqual({ status: 'not_found' });
+  });
+
+  it('does not import an earlier explicit publication under a newer worker generation', async () => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
+      turnResults: { enabled: true }, replyCardMode: 'unified' });
+    const store = new TurnReplyCardStore(config.session.dataDir);
+    const key = { larkAppId: APP, sessionId: ds.session.sessionId, turnId: 'om_turn_old' };
+    await store.prepare(key, { mode: 'unified', chatId: ds.chatId, rootId: 'om_source' });
+    await store.update(key, { kind: 'final', text: 'previous generation result', source: 'explicit',
+      card: '{"schema":"2.0","body":{"elements":[{"tag":"markdown","content":"previous generation result"}]}}' }, {
+      beforeEffect: () => {}, render: record => record.finalCard!, send: async () => 'om_previous',
+      patch: async () => {}, isWithdrawn: () => false,
+    });
+    ds.workerGeneration = 2;
+    ds.session.workerGeneration = 2;
+    delete ds.session.turnReplyContexts;
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_turn_old', status: 'completed' }, 2);
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old')).toEqual({ status: 'not_found' });
+  });
+
+  it('does not export a cached bridge publication as newly acknowledged by the current generation', async () => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
+      turnResults: { enabled: true }, replyCardMode: 'unified' });
+    const store = new TurnReplyCardStore(config.session.dataDir);
+    const key = { larkAppId: APP, sessionId: ds.session.sessionId, turnId: 'om_turn_old' };
+    await store.prepare(key, { mode: 'unified', chatId: ds.chatId, rootId: ds.chatId });
+    await store.update(key, { kind: 'final', text: 'answer', source: 'bridge',
+      card: '{"schema":"2.0","body":{"elements":[{"tag":"markdown","content":"answer"}]}}' }, {
+      beforeEffect: () => {}, render: record => record.finalCard!, send: async () => 'om_cached',
+      patch: async () => {}, isWithdrawn: () => false,
+    });
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_turn_old', status: 'completed' }, 1);
+    await final({ mode: 'thread', rootMessageId: 'om_source' });
+    const lookup = getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old');
+    expect(lookup?.status === 'ready' && lookup.result.output.status).toBe('unavailable');
+    expect(lookup?.status === 'ready' && lookup.result.deliveries[0].status).toBe('unknown');
   });
 
   it('retains the acknowledged overflow when the final primary write remains unknown', async () => {

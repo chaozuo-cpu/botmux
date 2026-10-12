@@ -26,6 +26,7 @@ export function lookupTurnResultRequest(
     return { httpStatus: 200, body: { status: 'unavailable', reason: 'disabled' } };
   }
   if (configuration.apiOnly || configuration.readIsolation) {
+    runtime?.clearBot(botId);
     return { httpStatus: 200, body: { status: 'unavailable', reason: 'unsupported_mode' } };
   }
   return { httpStatus: 200, body: runtime?.read(botId, sessionId, turnId, attempt) ?? { status: 'not_found' } };

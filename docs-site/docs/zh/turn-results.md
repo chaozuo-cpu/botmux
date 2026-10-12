@@ -81,7 +81,7 @@ GET /api/sessions/:sessionId/turns/:turnId/result?dispatchAttempt=1
 
 ## 覆盖与限制
 
-支持普通 IM transcript final，以及可绑定到当前轮次的统一回复卡 explicit final。无法证明完整正文和载体的 legacy explicit send 不从 `turn-sends`、最后消息或历史 transcript 推测，结果可能 unavailable/not_ready。
+首版支持具有可信 IM 入站来源、当前代次及本次发布回执的普通 transcript final。跨进程 explicit final、已有卡片复用和不能证明完整载体的发送形态保持 unavailable/not_ready；不从 `turn-sends`、旧回复卡、最后消息或历史 transcript 推测正文、代次和全部附件。
 
 会议接收器、文档、私有回复、沙盒/读隔离、静默任务、adopt、headless/HTTP 结果等特殊路径不通过本功能外发正文。已有 HTTP trigger/headless 和 workflow 结果协议保持原样；本功能不强行合并它们。
 

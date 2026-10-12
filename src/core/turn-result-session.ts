@@ -7,9 +7,6 @@ import { replyCardSandboxBlocked } from './turn-reply-card.js';
 import { privateReplyEnabled } from './private-reply.js';
 import { isSilentScheduledTurn } from './silent-schedule-turns.js';
 import { isSubstituteTurn } from './reply-target.js';
-import { TurnReplyCardStore } from '../services/turn-reply-card.js';
-import { config } from '../config.js';
-import { frozenReplyContextForTurn } from './reply-target.js';
 
 export function turnResultEnabled(botId: string): boolean {
   try { return getBot(botId).config.turnResults?.enabled === true; } catch { return false; }
@@ -17,7 +14,9 @@ export function turnResultEnabled(botId: string): boolean {
 
 export function turnResultSessionEligible(session: DaemonSession, turnId: string, dispatchAttempt?: number): boolean {
   try {
-    return turnResultEnabled(session.larkAppId) && !!turnId
+    return turnResultEnabled(session.larkAppId) && /^om_[a-zA-Z0-9_-]+$/.test(turnId)
+      && /^om_[a-zA-Z0-9_-]+$/.test(session.session.turnReplyContexts?.[turnId]?.sourceMessageId ?? '')
+      && !session.settledHttpTerminalTurns?.has(turnId)
       && larkTransportEnabled({ chatId: session.chatId, apiOnly: getBot(session.larkAppId).config.apiOnly })
       && !isDocNativeSession(session) && !session.docCommentTurns?.has(turnId)
       && !session.session.vcMeetingReceiver && !session.session.deferredScheduleRun
@@ -38,7 +37,8 @@ export function turnResultBinding(
   return {
     ref: { botId: session.larkAppId, sessionId: session.session.sessionId, turnId,
       ...(dispatchAttempt === undefined ? {} : { dispatchAttempt }) },
-    source: { kind: 'im', platform: 'lark', chatId: session.chatId, messageId: turnId },
+    source: { kind: 'im', platform: 'lark', chatId: session.chatId,
+      messageId: session.session.turnReplyContexts![turnId].sourceMessageId },
     workerGeneration: workerGeneration!,
   };
 }
@@ -53,22 +53,6 @@ export function observeTurnResultTerminal(
   try {
     const runtime = getTurnResultRuntime();
     runtime?.begin(binding);
-    if (terminal.status === 'completed') {
-      const record = new TurnReplyCardStore(config.session.dataDir).read({
-        larkAppId: binding.ref.botId, sessionId: binding.ref.sessionId, turnId: binding.ref.turnId,
-        ...(binding.ref.dispatchAttempt === undefined ? {} : { dispatchAttempt: binding.ref.dispatchAttempt }),
-      });
-      if (record?.finalDelivered && record.finalSource === 'explicit' && record.finalText !== undefined
-        && record.messageId && record.chatId === binding.source.chatId) {
-        const target = frozenReplyContextForTurn(session, terminal.turnId).target;
-        runtime?.delivery(binding, { status: 'available', format: 'markdown', content: record.finalText, source: 'explicit' }, {
-          channel: 'im', status: 'delivered', platform: 'lark', chatId: binding.source.chatId,
-          ...(target.mode !== 'plain' ? { parentMessageId: target.rootMessageId } : {}),
-          messages: [{ kind: 'primary', messageId: record.messageId },
-            ...(record.overflowMessageId ? [{ kind: 'attachment' as const, messageId: record.overflowMessageId }] : [])],
-        });
-      }
-    }
     runtime?.terminal(binding, {
       status: terminal.status,
       ...(terminal.completedAtMs !== undefined && Number.isFinite(terminal.completedAtMs) && terminal.completedAtMs > 0

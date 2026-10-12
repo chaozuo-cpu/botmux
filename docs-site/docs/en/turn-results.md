@@ -46,7 +46,7 @@ Native completion is not delivery success. Content rejected by platform audit is
 
 ## Coverage and Retention
 
-Ordinary IM transcript finals and provable unified-card explicit finals are supported. Legacy explicit sends without a complete attributable receipt may remain unavailable/not ready. The feature does not reconstruct output from send markers, the latest message, or historical transcripts.
+The first version supports ordinary IM transcript finals with trusted inbound provenance and acknowledged publication in the current generation. Cross-process explicit finals, reused cards, and shapes without complete publication provenance remain unavailable/not ready. The feature does not infer content, generation, or all attachments from send markers, old card records, the latest message, or historical transcripts.
 
 Meeting receivers, document comments, private replies, sandbox/read isolation, silent schedules, adopted sessions, and headless/HTTP turns are not generic content-export paths. Existing trigger, headless, and workflow APIs remain unchanged.
 

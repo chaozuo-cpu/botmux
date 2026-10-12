@@ -154,7 +154,6 @@ import { createTurnResultRuntime, setTurnResultRuntime } from './turn-result-run
 import { TurnResultStore } from '../services/turn-result-store.js';
 import type { TurnResult, TurnDeliveryReceipt } from '../services/turn-result.js';
 import { turnResultEnabled, turnResultBinding, turnResultSessionEligible, observeTurnResultTerminal, observeTurnResultDelivery } from './turn-result-session.js';
-import { TurnReplyCardStore } from '../services/turn-reply-card.js';
 
 /** A random id minted once per daemon process (this lifetime). Stamped onto
  *  isolated persistent panes so a suspend→resume reattach (same id) is
@@ -18527,21 +18526,14 @@ function deliverFinalOutput(
   let topicMessageLookup: TopicMessageLookup | undefined;
   const resultBinding = turnResultBinding(ds, msg.turnId, msg.dispatchAttempt);
   const resultTarget = frozenReplyTarget ? { ...frozenReplyTarget } : undefined;
+  let finalPublication: { output: TurnResult['output']; receipt: Pick<TurnDeliveryReceipt, 'status' | 'messages' | 'reason'> } | undefined;
   const resultReceipt = (status: TurnDeliveryReceipt['status'], messages: TurnDeliveryReceipt['messages'], reason?: string): TurnDeliveryReceipt => ({
     channel: 'im', status, platform: 'lark', chatId: resultBinding?.source.chatId ?? ds.chatId,
     ...(resultTarget && resultTarget.mode !== 'plain' ? { parentMessageId: resultTarget.rootMessageId } : {}),
     messages, ...(reason ? { reason } : {}),
   });
   const partialResultMessages = (): TurnDeliveryReceipt['messages'] => {
-    if (!resultBinding) return [];
-    try {
-      const record = new TurnReplyCardStore(config.session.dataDir).read({
-        larkAppId: ds.larkAppId, sessionId: ds.session.sessionId, turnId: msg.turnId,
-        ...(msg.dispatchAttempt === undefined ? {} : { dispatchAttempt: msg.dispatchAttempt }),
-      });
-      return record?.overflowMessageId && record.finalText === msg.content
-        ? [{ kind: 'attachment', messageId: record.overflowMessageId }] : [];
-    } catch { return []; }
+    return finalPublication?.receipt.messages ?? [];
   };
   const scopedReply = (
     content: string,
@@ -19034,7 +19026,8 @@ function deliverFinalOutput(
               ...(feedbackPolicy && feedback ? { feedback: { policy: feedbackPolicy, requesterSubjectId: feedbackRequesterSubjectId } } : {}),
             }, (body, type, uuid, beforeWrite) => scopedReply(body, type, msg.replyTurnId ?? msg.turnId,
               frozenReplyTarget ? { uuid, beforeWrite, replyTarget: frozenReplyTarget } : { uuid, beforeWrite }),
-            { dispatchAttempt: msg.dispatchAttempt, owns: isStillOwned })
+            { dispatchAttempt: msg.dispatchAttempt, owns: isStillOwned,
+              ...(resultBinding ? { onPublication: publication => { finalPublication = publication; } } : {}) })
           : undefined;
       const sendFinal = (content: string) => scopedReply(
         content,
@@ -19103,15 +19096,17 @@ function deliverFinalOutput(
           explicit ? explicit.feedback?.requesterSubjectId : feedbackRequesterSubjectId,
           getBot(ds.larkAppId).config.feedbackWebhooks?.destinations, t, explicit ? messageId : undefined);
       }
-      observeTurnResultDelivery(resultBinding, msg.turnFailed
+      observeTurnResultDelivery(resultBinding, finalPublication?.output ?? (explicit
+        ? { status: 'unavailable', reason: 'explicit_publication_unproven' }
+        : msg.turnFailed
         ? { status: 'unavailable', reason: 'execution_failed' }
-        : { status: 'available', format: 'markdown', content: explicit?.finalText ?? safeAssistantText,
-            source: explicit ? 'explicit' : 'transcript' },
-      resultReceipt('delivered', [
+        : { status: 'available', format: 'markdown', content: safeAssistantText,
+            source: 'transcript' }),
+      resultReceipt(finalPublication?.receipt.status ?? (explicit ? 'unknown' : 'delivered'), finalPublication?.receipt.messages ?? (explicit ? [] : [
         { kind: 'primary', messageId },
         ...(unifiedReply?.record.overflowMessageId
           ? [{ kind: 'attachment' as const, messageId: unifiedReply.record.overflowMessageId }] : []),
-      ]));
+      ]), finalPublication?.receipt.reason));
       onComplete?.(true, messageId);
     } catch (err: any) {
       if (!isStillOwned()) { onComplete?.(false); return; }

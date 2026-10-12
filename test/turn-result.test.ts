@@ -110,6 +110,17 @@ describe('ordinary turn result snapshots', () => {
     expect(lookup.status === 'ready' && lookup.result.output).toEqual({ status: 'unavailable', reason: 'execution_failed' });
   });
 
+  it.each(['failed', 'cancelled', 'ambiguous'] as const)('waits for final delivery after %s terminal', status => {
+    const store = new TurnResultStore();
+    store.begin(binding);
+    store.recordTerminal(binding, { status });
+    expect(store.read(binding.ref)).toEqual({ status: 'not_ready' });
+    store.recordDelivery(binding, output, { ...receipt, status: 'partial' });
+    const lookup = store.read(binding.ref);
+    expect(lookup.status === 'ready' && lookup.result.output).toEqual({ status: 'unavailable', reason: `execution_${status}` });
+    expect(lookup.status === 'ready' && lookup.result.deliveries[0].messages).toEqual(receipt.messages);
+  });
+
   it('bounds pending and ready entries by count', () => {
     const store = new TurnResultStore();
     store.begin(binding);
@@ -150,6 +161,18 @@ describe('ordinary turn result snapshots', () => {
     const lookup = store.read(binding.ref);
     expect(lookup.status === 'ready' && lookup.result.output).toEqual({ status: 'unavailable', reason: 'result_too_large' });
     expect(lookup.status === 'ready' && lookup.result.deliveries).toEqual([receipt]);
+  });
+
+  it('bounds the complete serialized result including its execution envelope', () => {
+    const store = new TurnResultStore();
+    const longExecution = { ...execution, completedAt: '2026-10-13T00:00:00.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000Z' };
+    store.begin(binding);
+    store.recordDelivery(binding, { ...output, content: 'x'.repeat(1047900) }, receipt);
+    store.recordTerminal(binding, longExecution);
+    const lookup = store.read(binding.ref);
+    expect(lookup.status).toBe('ready');
+    if (lookup.status !== 'ready') throw new Error('Expected result');
+    expect(Buffer.byteLength(JSON.stringify(lookup.result))).toBeLessThanOrEqual(1048576);
   });
 
   it('clears only the disabled bot and does not reconstruct cleared results', () => {
@@ -217,6 +240,21 @@ describe('authorized turn result observers', () => {
       status: 'unavailable', reason: 'unsupported_mode',
     });
     eligible = true;
+    expect(runtime.read(binding.ref.botId, binding.ref.sessionId, binding.ref.turnId)).toEqual({ status: 'not_found' });
+  });
+
+  it.each(['enabled', 'eligible'])('forgets retained output when collection observes revoked %s', gate => {
+    let allowed = true;
+    const runtime = createTurnResultRuntime({
+      store: new TurnResultStore(), enabled: () => gate === 'enabled' ? allowed : true,
+      eligible: () => gate === 'eligible' ? allowed : true, owns: () => true,
+    });
+    runtime.begin(binding);
+    runtime.delivery(binding, output, receipt);
+    runtime.terminal(binding, execution);
+    allowed = false;
+    runtime.terminal(binding, execution);
+    allowed = true;
     expect(runtime.read(binding.ref.botId, binding.ref.sessionId, binding.ref.turnId)).toEqual({ status: 'not_found' });
   });
 

@@ -239,6 +239,10 @@ describe('dashboard IPC server', () => {
     const invalid = await fetch(`${url}?dispatchAttempt=0&dispatchAttempt=1`, { headers: trustedHostHeaders('GET', path, handle.port) });
     expect(invalid.status).toBe(400);
     registerBot({ larkAppId: appId, larkAppSecret: 'fixture' });
+    registerBot({ larkAppId: appId, larkAppSecret: 'fixture', turnResults: { enabled: true } });
+    const revoked = await fetch(url, { headers: trustedHostHeaders('GET', path, handle.port) });
+    expect(await revoked.json()).toEqual({ status: 'not_found' });
+    registerBot({ larkAppId: appId, larkAppSecret: 'fixture' });
     const disabled = await fetch(url, { headers: trustedHostHeaders('GET', path, handle.port) });
     expect(await disabled.json()).toEqual({ status: 'unavailable', reason: 'disabled' });
     registerBot({ larkAppId: appId, larkAppSecret: 'fixture', turnResults: { enabled: true } });

@@ -133,13 +133,17 @@ export class TurnResultStore {
 
   private settle(entry: ResultEntry): void {
     if (!entry.execution || !entry.output
-      || (entry.execution.status === 'completed' && entry.output.status !== 'empty' && !entry.receipt)) return;
+      || (entry.output.status !== 'empty' && !entry.receipt)) return;
     if (entry.execution.status !== 'completed') entry.output = { status: 'unavailable', reason: `execution_${entry.execution.status}` };
     entry.readyAt = this.now();
-    entry.result = snapshot({
+    const result: TurnResult = {
       version: 1, ref: entry.binding.ref, source: entry.binding.source,
       execution: entry.execution, output: entry.output, deliveries: entry.receipt ? [entry.receipt] : [],
-    });
+    };
+    if (Buffer.byteLength(JSON.stringify(result)) > MAX_RESULT_BYTES) {
+      result.output = { status: 'unavailable', reason: 'result_too_large' };
+    }
+    entry.result = snapshot(result);
     delete entry.output;
     delete entry.receipt;
     delete entry.execution;

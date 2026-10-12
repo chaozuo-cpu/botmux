@@ -22101,7 +22101,7 @@ async function startInitialPassthroughSession(args: {
     sessionStore.updateSession(ds.session);
   }
   const initialWindow = buildTurnParticipants(larkAppId, senderOpenId, resolvedSenderIsBotTriState, undefined, initialPassthroughSender?.name);
-  beginReplyTargetTurn(ds, replyRootId, messageId, new Date().toISOString(), { senderOpenId, participants: initialWindow.participants, participantsIncomplete: initialWindow.incomplete, inThread: !!parsed.threadId });
+  beginReplyTargetTurn(ds, replyRootId, messageId, new Date().toISOString(), { senderOpenId, participants: initialWindow.participants, participantsIncomplete: initialWindow.incomplete, inThread: !!parsed.threadId, sourceMessageId: parsed.messageId });
   sessionStore.updateSession(ds.session);
   const registration = await claimNewDaemonSession(activeSessions, ds);
   if (!registration.accepted) {
@@ -23257,7 +23257,7 @@ async function handleNewTopicAdmitted(data: any, ctx: RoutingContext): Promise<v
   // Turn key is the reply anchor (== messageId outside session-group births) so
   // the per-turn reply context and currentReplyTarget.turnId line up with the
   // worker's turn id — current-turn provenance requires that equality.
-  beginReplyTargetTurn(ds, replyRootId, replyAnchorId, new Date().toISOString(), { quoteOnly: substituteReplyMode === 'quote', substitute: !!substituteTrigger, senderOpenId, participants: newTopicWindow.participants, participantsIncomplete: newTopicWindow.incomplete, inThread: !!parsed.threadId, foldedRootId: ctx.foldedRootId });
+  beginReplyTargetTurn(ds, replyRootId, replyAnchorId, new Date().toISOString(), { quoteOnly: substituteReplyMode === 'quote', substitute: !!substituteTrigger, senderOpenId, participants: newTopicWindow.participants, participantsIncomplete: newTopicWindow.incomplete, inThread: !!parsed.threadId, foldedRootId: ctx.foldedRootId, sourceMessageId: parsed.messageId });
   sessionStore.updateSession(ds.session);
   const registration = await claimNewDaemonSession(activeSessions, ds);
   if (!registration.accepted) {
@@ -25355,7 +25355,7 @@ async function handleThreadReplyAdmitted(
     // on the double-race (matches the new-topic path's collectPostAtMentions args).
     const existingPostAt = prepared?.postParticipantMentions ?? collectPostAtMentions(data?.message, ctx.forwardSeedData?.message);
     const existingWindow = buildTurnParticipants(larkAppId, callerOpenId, senderIsBotTriState(parsed.senderType, isForeignBot), parsed.mentions, undefined, existingPostAt);
-    beginReplyTargetTurn(ds, replyRootId, parsed.messageId, new Date().toISOString(), { quoteOnly: substituteReplyMode === 'quote', substitute: !!substituteTrigger, senderOpenId: callerOpenId, participants: existingWindow.participants, participantsIncomplete: existingWindow.incomplete, inThread: !!parsed.threadId, foldedRootId: ctx.foldedRootId });
+    beginReplyTargetTurn(ds, replyRootId, parsed.messageId, new Date().toISOString(), { quoteOnly: substituteReplyMode === 'quote', substitute: !!substituteTrigger, senderOpenId: callerOpenId, participants: existingWindow.participants, participantsIncomplete: existingWindow.incomplete, inThread: !!parsed.threadId, foldedRootId: ctx.foldedRootId, sourceMessageId: parsed.messageId });
     if (callerOpenId && ds.session.lastCallerOpenId !== callerOpenId) {
       ds.session.lastCallerOpenId = callerOpenId;
     }
@@ -25806,7 +25806,7 @@ async function handleThreadReplyAdmitted(
       : 'thread';
     const autoCreatePostAt = prepared?.postParticipantMentions ?? collectPostAtMentions(data?.message, ctx.forwardSeedData?.message);
     const autoCreateWindow = buildTurnParticipants(larkAppId, senderOId, senderIsBotTriState(parsed.senderType, isForeignBot), parsed.mentions, autoCreateSender?.name, autoCreatePostAt);
-    beginReplyTargetTurn(newDs, replyRootId, parsed.messageId, new Date().toISOString(), { quoteOnly: substituteReplyMode === 'quote', substitute: !!substituteTrigger, senderOpenId: senderOId, participants: autoCreateWindow.participants, participantsIncomplete: autoCreateWindow.incomplete, inThread: !!parsed.threadId, foldedRootId: ctx.foldedRootId });
+    beginReplyTargetTurn(newDs, replyRootId, parsed.messageId, new Date().toISOString(), { quoteOnly: substituteReplyMode === 'quote', substitute: !!substituteTrigger, senderOpenId: senderOId, participants: autoCreateWindow.participants, participantsIncomplete: autoCreateWindow.incomplete, inThread: !!parsed.threadId, foldedRootId: ctx.foldedRootId, sourceMessageId: parsed.messageId });
     sessionStore.updateSession(newDs.session);
     const registration = await claimNewDaemonSession(activeSessions, newDs);
     if (!registration.accepted) {

@@ -14,8 +14,14 @@ export function createTurnResultRuntime(deps: TurnResultRuntimeDeps) {
   let closed = false;
   const bots = new Set<string>();
   const pending = new Set<ReturnType<typeof setTimeout>>();
-  const allowed = (binding: TurnResultBinding): boolean => !closed
-    && deps.enabled(binding.ref.botId) && deps.eligible(binding) && deps.owns(binding);
+  const allowed = (binding: TurnResultBinding): boolean => {
+    if (closed) return false;
+    if (!deps.enabled(binding.ref.botId) || !deps.eligible(binding)) {
+      deps.store.clearBot(binding.ref.botId);
+      return false;
+    }
+    return deps.owns(binding);
+  };
   const notify = (binding: TurnResultBinding, before: TurnResultLookup): void => {
     if (before.status === 'ready' || !deps.onTurnResult || !allowed(binding)) return;
     const lookup = deps.store.read(binding.ref);

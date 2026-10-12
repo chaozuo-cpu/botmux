@@ -12,16 +12,22 @@ export function turnResultEnabled(botId: string): boolean {
   try { return getBot(botId).config.turnResults?.enabled === true; } catch { return false; }
 }
 
+function turnResultModeAllowed(session: DaemonSession): boolean {
+  try {
+    return turnResultEnabled(session.larkAppId)
+      && larkTransportEnabled({ chatId: session.chatId, apiOnly: getBot(session.larkAppId).config.apiOnly })
+      && !isDocNativeSession(session) && !session.session.vcMeetingReceiver
+      && !session.session.headless && !session.adoptedFrom && !session.session.adoptedFrom
+      && !privateReplyEnabled(session.session) && !replyCardSandboxBlocked(session);
+  } catch { return false; }
+}
+
 export function turnResultSessionEligible(session: DaemonSession, turnId: string, dispatchAttempt?: number): boolean {
   try {
-    return turnResultEnabled(session.larkAppId) && /^om_[a-zA-Z0-9_-]+$/.test(turnId)
+    return turnResultModeAllowed(session) && /^om_[a-zA-Z0-9_-]+$/.test(turnId)
       && /^om_[a-zA-Z0-9_-]+$/.test(session.session.turnReplyContexts?.[turnId]?.sourceMessageId ?? '')
       && !session.settledHttpTerminalTurns?.has(turnId)
-      && larkTransportEnabled({ chatId: session.chatId, apiOnly: getBot(session.larkAppId).config.apiOnly })
-      && !isDocNativeSession(session) && !session.docCommentTurns?.has(turnId)
-      && !session.session.vcMeetingReceiver && !session.session.deferredScheduleRun
-      && !session.session.headless && !session.adoptedFrom && !session.session.adoptedFrom
-      && !privateReplyEnabled(session.session) && !replyCardSandboxBlocked(session)
+      && !session.docCommentTurns?.has(turnId) && !session.session.deferredScheduleRun
       && !isSilentScheduledTurn(session, turnId) && !isSubstituteTurn(session, turnId)
       && !session.pendingWaitPromises?.has(turnId) && !session.asyncTriggerResults?.has(turnId)
       && !(dispatchAttempt !== undefined && (session.suppressedFinalOutputTurns?.get(turnId) ?? -1) >= dispatchAttempt);
@@ -32,10 +38,11 @@ export function turnResultBinding(
   session: DaemonSession, turnId: string, dispatchAttempt?: number,
   workerGeneration = session.session.workerGeneration,
 ): TurnResultBinding | undefined {
-  if (!turnResultSessionEligible(session, turnId, dispatchAttempt)) {
+  if (!turnResultModeAllowed(session)) {
     getTurnResultRuntime()?.clearBot(session.larkAppId);
     return undefined;
   }
+  if (!turnResultSessionEligible(session, turnId, dispatchAttempt)) return undefined;
   if (!Number.isSafeInteger(workerGeneration) || (workerGeneration ?? 0) <= 0) return undefined;
   return {
     ref: { botId: session.larkAppId, sessionId: session.session.sessionId, turnId,

@@ -104,6 +104,17 @@ describe('worker final-output topic transport', () => {
     expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old')).toEqual({ status: 'not_found' });
   });
 
+  it('rejects unrelated unsupported turns without clearing an admitted result', async () => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code', turnResults: { enabled: true } });
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_turn_old', status: 'completed' }, 1);
+    await final({ mode: 'thread', rootMessageId: 'om_source' });
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_synthetic', status: 'completed', outputDisposition: 'nothing_to_send' }, 1);
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_synthetic')).toEqual({ status: 'not_found' });
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old').status).toBe('ready');
+  });
+
   it('retains the acknowledged final attachment after primary content audit rejection', async () => {
     registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
       turnResults: { enabled: true }, replyCardMode: 'unified' });

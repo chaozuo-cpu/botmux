@@ -32,8 +32,11 @@ export function turnResultBinding(
   session: DaemonSession, turnId: string, dispatchAttempt?: number,
   workerGeneration = session.session.workerGeneration,
 ): TurnResultBinding | undefined {
-  if (!turnResultSessionEligible(session, turnId, dispatchAttempt)
-    || !Number.isSafeInteger(workerGeneration) || (workerGeneration ?? 0) <= 0) return undefined;
+  if (!turnResultSessionEligible(session, turnId, dispatchAttempt)) {
+    getTurnResultRuntime()?.clearBot(session.larkAppId);
+    return undefined;
+  }
+  if (!Number.isSafeInteger(workerGeneration) || (workerGeneration ?? 0) <= 0) return undefined;
   return {
     ref: { botId: session.larkAppId, sessionId: session.session.sessionId, turnId,
       ...(dispatchAttempt === undefined ? {} : { dispatchAttempt }) },

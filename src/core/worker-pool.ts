@@ -19111,8 +19111,9 @@ function deliverFinalOutput(
     } catch (err: any) {
       if (!isStillOwned()) { onComplete?.(false); return; }
       if (err instanceof ReplyCardWithdrawnError) {
+        const deliveredParts = partialResultMessages();
         observeTurnResultDelivery(resultBinding, { status: 'unavailable', reason: 'message_withdrawn' },
-          resultReceipt('failed', [], 'message_withdrawn'));
+          resultReceipt(deliveredParts.length ? 'partial' : 'failed', deliveredParts, 'message_withdrawn'));
         // Withdrawing one answer is not closing the conversation. Preserve the
         // session and consume only this turn's automatic delivery retry.
         ds.lastBridgeEmittedUuid = finalOutputDedupeKey(ds, msg);
@@ -19120,8 +19121,9 @@ function deliverFinalOutput(
         return;
       }
       if (isLarkContentAuditError(err)) {
+        const deliveredParts = partialResultMessages();
         observeTurnResultDelivery(resultBinding, { status: 'unavailable', reason: 'content_audit_blocked' },
-          resultReceipt('failed', [], 'content_audit_blocked'));
+          resultReceipt(deliveredParts.length ? 'partial' : 'failed', deliveredParts, 'content_audit_blocked'));
         // The platform PERMANENTLY rejected this payload (tenant DLP / content
         // audit: e.g. an email address or phone number in the answer). Retrying
         // unchanged cannot succeed and only burns 22s of backoff while leaving
@@ -19185,8 +19187,9 @@ function deliverFinalOutput(
         return;
       }
       if (err instanceof MessageWithdrawnError) {
+        const deliveredParts = partialResultMessages();
         observeTurnResultDelivery(resultBinding, { status: 'unavailable', reason: 'message_withdrawn' },
-          resultReceipt('failed', [], 'message_withdrawn'));
+          resultReceipt(deliveredParts.length ? 'partial' : 'failed', deliveredParts, 'message_withdrawn'));
         // Withdrawal is permanent for this target, but it is not explicit
         // abandon. Keep an unsettled FIFO owner recoverable; only ledger-empty
         // sessions may commit the dedupe marker and auto-close.

@@ -22,7 +22,7 @@ import { updateTurnReplyCard } from '../src/core/turn-reply-card.js';
 import { registerBot } from '../src/bot-registry.js';
 import { config } from '../src/config.js';
 import { activeSessionKey, type DaemonSession } from '../src/core/types.js';
-import { __testOnly_activeSessions as activeSessions, __testOnly_sessionReply as sessionReply } from '../src/daemon.js';
+import { __testOnly_activeSessions as activeSessions, __testOnly_sessionReply as sessionReply, useOrdinaryOutputDelivery } from '../src/daemon.js';
 import { __testOnly_resetLarkGate } from '../src/im/lark/api-gate.js';
 import { getTurnResultRuntime, setTurnResultRuntime } from '../src/core/turn-result-runtime.js';
 import { observeTurnResultTerminal } from '../src/core/turn-result-session.js';
@@ -83,6 +83,43 @@ function final(target?: FrozenSessionReplyTarget, owns: () => boolean = () => tr
 }
 
 describe('worker final-output topic transport', () => {
+  it('keeps ordinary result collection alive when durable delivery is disabled', async () => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code', turnResults: { enabled: true } });
+    useOrdinaryOutputDelivery();
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_turn_old', status: 'completed' }, 1);
+    await final({ mode: 'thread', rootMessageId: 'om_source' });
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old').status).toBe('ready');
+  });
+
+  it('clears retained results when the actual terminal adapter sees revoked mode', async () => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code', turnResults: { enabled: true } });
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_turn_old', status: 'completed' }, 1);
+    await final({ mode: 'thread', rootMessageId: 'om_source' });
+    ds.session.vcMeetingReceiver = {} as never;
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_turn_old', status: 'completed' }, 1);
+    delete ds.session.vcMeetingReceiver;
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old')).toEqual({ status: 'not_found' });
+  });
+
+  it('retains the acknowledged final attachment after primary content audit rejection', async () => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
+      turnResults: { enabled: true }, replyCardMode: 'unified' });
+    mocks.upload.mockResolvedValue({ file_key: 'file_result' });
+    mocks.reply.mockImplementation(async input => input.data.msg_type === 'file'
+      ? { code: 0, data: { message_id: 'om_overflow' } }
+      : { code: 230028, msg: 'content audit rejected' });
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_turn_old', status: 'completed' }, 1);
+    await final({ mode: 'thread', rootMessageId: 'om_source' }, () => true, '完整内容'.repeat(20000));
+    const lookup = getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old');
+    expect(lookup?.status === 'ready' && lookup.result.output.status).toBe('unavailable');
+    expect(lookup?.status === 'ready' && lookup.result.deliveries[0]).toMatchObject({
+      status: 'partial', messages: [{ kind: 'attachment', messageId: 'om_overflow' }],
+    });
+  });
   it('uses the actual worker terminal handler only for an admitted IM input', async () => {
     sessionStore.init(APP);
     registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'traex',

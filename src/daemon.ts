@@ -151,6 +151,11 @@ import * as messageQueue from './services/message-queue.js';
 import { emitHookEvent, emitHookEventLocal, evaluatePromptGate, HOOK_EVENTS, type HookEvent } from './services/hook-runner.js';
 import { setSessionLifecycleShutdown } from './services/session-lifecycle-hooks.js';
 import { setTurnResultRuntime } from './core/turn-result-runtime.js';
+
+export function useOrdinaryOutputDelivery(): void {
+  setDurableBridgeFinalOutputHandler(undefined);
+  setDurableSessionSendHandler(null);
+}
 import { setUsageLedgerPricingResolver, setUsageLedgerRecordSink } from './services/usage-ledger.js';
 import { trackBudgetSpend, formatBudgetAlert } from './services/budget-tracker.js';
 import { resolvePricingConfig } from './services/model-pricing.js';
@@ -29782,9 +29787,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     }));
     setDurableSessionSendHandler(deliverDurablePrimaryMessage);
   } else {
-    setDurableBridgeFinalOutputHandler(undefined);
-    setTurnResultRuntime(undefined);
-    setDurableSessionSendHandler(null);
+    useOrdinaryOutputDelivery();
   }
   xpiSessionStoreBusyNoticeReadyApps.add(cfg.larkAppId);
   // The restore preflight only records structured diagnostics. Human-readable
@@ -30637,6 +30640,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     // Dispatcher stop always receives the hard-clamped remaining budget (never
     // its internal 5s default), success or failure path alike.
     await feedbackWebhookDispatcher?.stop(remainingBudget());
+    setTurnResultRuntime(undefined);
     for (const runtime of durablePrimaryRuntimes) {
       const stopped = await runtime.stop(remainingBudget());
       if (stopped.kind === 'timed_out') {

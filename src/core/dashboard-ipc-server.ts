@@ -1,4 +1,5 @@
 import { readTurnRegistration } from './trigger-registration.js';
+import { lookupTurnResultRequest } from './turn-result-routes.js';
 import { normalizeCalendarBinding, normalizeCalendarDayType, listWorkCalendars, previewTaskCalendar } from '../services/work-calendar.js';
 import { resolveWorkspace } from './workspace-metadata.js';
 // src/core/dashboard-ipc-server.ts
@@ -1300,6 +1301,13 @@ function composeDashboardSessionRows(opts?: { includeTokenUsage?: boolean }): Se
 // endpoints below which proxy calls into groups-store on this bot's behalf.
 let cachedLarkAppId = '';
 export function setLarkAppId(id: string): void { cachedLarkAppId = id; }
+
+ipcRoute('GET', '/api/sessions/:sessionId/turns/:turnId/result', (req, res, params) => {
+  if (!isTrustedHostIpcRequest(req)) return jsonRes(res, 403, { status: 'unavailable', reason: 'trusted_host_required' });
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  const result = lookupTurnResultRequest(cachedLarkAppId, params.sessionId, params.turnId, url.searchParams);
+  return jsonRes(res, result.httpStatus, result.body);
+});
 
 async function handleDeviceIsolationActivationRoute(
   req: IncomingMessage,

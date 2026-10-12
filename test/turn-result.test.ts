@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { TurnResultStore } from '../src/services/turn-result-store.js';
 import type { TurnResultBinding, TurnResult, TurnDeliveryReceipt } from '../src/services/turn-result.js';
+import { createTurnResultRuntime } from '../src/core/turn-result-runtime.js';
 
 const binding: TurnResultBinding = {
   ref: { botId: 'app_result', sessionId: 'session_result', turnId: 'om_result' },
@@ -159,5 +160,96 @@ describe('ordinary turn result snapshots', () => {
     store.clearBot(binding.ref.botId);
     expect(store.read(binding.ref)).toEqual({ status: 'not_found' });
     expect(store.read(other.ref).status).toBe('ready');
+  });
+});
+
+describe('authorized turn result observers', () => {
+  it('publishes only a ready snapshot and isolates observer failures from result reads', async () => {
+    const received: TurnResult[] = [];
+    const errors: string[] = [];
+    const runtime = createTurnResultRuntime({
+      store: new TurnResultStore(), enabled: () => true, eligible: () => true, owns: () => true,
+      onTurnResult: result => { received.push(result); throw new Error('secret error content'); },
+      onObserverError: (_ref, code) => { errors.push(code); },
+    });
+    runtime.begin(binding);
+    runtime.terminal(binding, execution);
+    expect(received).toEqual([]);
+    runtime.delivery(binding, output, receipt);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(received).toHaveLength(1);
+    expect(received[0].output.content).toBe(output.content);
+    expect(runtime.read(binding.ref.botId, binding.ref.sessionId, binding.ref.turnId).status).toBe('ready');
+    expect(errors).toEqual(['observer_failed']);
+  });
+
+  it('clears disabled content and refuses stale or ineligible facts', () => {
+    let enabled = true;
+    let owns = true;
+    const runtime = createTurnResultRuntime({
+      store: new TurnResultStore(), enabled: () => enabled, eligible: () => true, owns: () => owns,
+    });
+    runtime.begin(binding);
+    owns = false;
+    runtime.delivery(binding, output, receipt);
+    runtime.terminal(binding, execution);
+    expect(runtime.read(binding.ref.botId, binding.ref.sessionId, binding.ref.turnId)).toEqual({ status: 'not_ready' });
+    owns = true;
+    runtime.delivery(binding, output, receipt);
+    runtime.terminal(binding, execution);
+    enabled = false;
+    expect(runtime.read(binding.ref.botId, binding.ref.sessionId, binding.ref.turnId)).toEqual({ status: 'unavailable', reason: 'disabled' });
+    enabled = true;
+    expect(runtime.read(binding.ref.botId, binding.ref.sessionId, binding.ref.turnId)).toEqual({ status: 'not_found' });
+  });
+
+  it('withdraws result readability when its source mode is no longer eligible', () => {
+    let eligible = true;
+    const runtime = createTurnResultRuntime({
+      store: new TurnResultStore(), enabled: () => true, eligible: () => eligible, owns: () => true,
+    });
+    runtime.begin(binding);
+    runtime.delivery(binding, output, receipt);
+    runtime.terminal(binding, execution);
+    eligible = false;
+    expect(runtime.read(binding.ref.botId, binding.ref.sessionId, binding.ref.turnId)).toEqual({
+      status: 'unavailable', reason: 'unsupported_mode',
+    });
+    eligible = true;
+    expect(runtime.read(binding.ref.botId, binding.ref.sessionId, binding.ref.turnId)).toEqual({ status: 'not_found' });
+  });
+
+  it('reports an observer deadline without changing the completed result', async () => {
+    vi.useFakeTimers();
+    try {
+      const errors: string[] = [];
+      const runtime = createTurnResultRuntime({
+        store: new TurnResultStore(), enabled: () => true, eligible: () => true, owns: () => true,
+        onTurnResult: () => new Promise<void>(() => {}),
+        onObserverError: (_ref, code) => { errors.push(code); },
+      });
+      runtime.begin(binding);
+      runtime.delivery(binding, output, receipt);
+      runtime.terminal(binding, execution);
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(errors).toEqual(['observer_timeout']);
+      expect(runtime.read(binding.ref.botId, binding.ref.sessionId, binding.ref.turnId).status).toBe('ready');
+      runtime.close();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('does not publish an incomplete cache entry as a notification', async () => {
+    const received: TurnResult[] = [];
+    const runtime = createTurnResultRuntime({
+      store: new TurnResultStore(), enabled: () => true, eligible: () => false, owns: () => true,
+      onTurnResult: result => { received.push(result); },
+    });
+    runtime.begin(binding);
+    runtime.delivery(binding, output, receipt);
+    runtime.terminal(binding, execution);
+    await Promise.resolve();
+    expect(received).toEqual([]);
+    expect(runtime.read(binding.ref.botId, binding.ref.sessionId, binding.ref.turnId)).toEqual({ status: 'not_found' });
   });
 });

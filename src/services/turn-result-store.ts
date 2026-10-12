@@ -159,6 +159,12 @@ export class TurnResultStore {
     return current.result ? { status: 'ready', result: snapshot(current.result) } : { status: 'not_ready' };
   }
 
+  readBinding(ref: TurnResult['ref']): TurnResultBinding | undefined {
+    this.prune();
+    const binding = this.entries.get(keyFor(ref))?.binding;
+    return binding ? snapshot(binding) : undefined;
+  }
+
   clearBot(botId: string): void {
     for (const [key, entry] of this.entries) if (entry.binding.ref.botId === botId) this.entries.delete(key);
   }

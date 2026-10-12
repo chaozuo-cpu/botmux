@@ -150,6 +150,7 @@ import { migrateOverloadAlertAtStartup } from './services/overload-alert-migrati
 import * as messageQueue from './services/message-queue.js';
 import { emitHookEvent, emitHookEventLocal, evaluatePromptGate, HOOK_EVENTS, type HookEvent } from './services/hook-runner.js';
 import { setSessionLifecycleShutdown } from './services/session-lifecycle-hooks.js';
+import { setTurnResultRuntime } from './core/turn-result-runtime.js';
 import { setUsageLedgerPricingResolver, setUsageLedgerRecordSink } from './services/usage-ledger.js';
 import { trackBudgetSpend, formatBudgetAlert } from './services/budget-tracker.js';
 import { resolvePricingConfig } from './services/model-pricing.js';
@@ -29782,6 +29783,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     setDurableSessionSendHandler(deliverDurablePrimaryMessage);
   } else {
     setDurableBridgeFinalOutputHandler(undefined);
+    setTurnResultRuntime(undefined);
     setDurableSessionSendHandler(null);
   }
   xpiSessionStoreBusyNoticeReadyApps.add(cfg.larkAppId);

@@ -21,6 +21,8 @@ import {
 import { isSubstituteTurn } from './reply-target.js';
 import { isSilentScheduledTurn } from './silent-schedule-turns.js';
 import { privateReplyEnabled } from './private-reply.js';
+import { observeTurnResultDelivery, turnResultBinding } from './turn-result-session.js';
+import { frozenReplyContextForTurn } from './reply-target.js';
 import { isDocNativeSession, larkTransportEnabled, sessionAnchorId, type DaemonSession } from './types.js';
 
 /** Every native write, including overflow files, retains the record owner's gate. */
@@ -94,6 +96,8 @@ export async function updateTurnReplyCard(
   const mode = replyCardModeFor(ds, turnId);
   if (mode === 'legacy') return undefined;
   const key = replyCardKey(ds, turnId, options.dispatchAttempt);
+  const resultBinding = event.kind === 'final' ? turnResultBinding(ds, turnId, options.dispatchAttempt) : undefined;
+  const resultTarget = resultBinding ? { ...frozenReplyContextForTurn(ds, turnId).target } : undefined;
   const store = new TurnReplyCardStore(config.session.dataDir);
   const session = ds.session;
   const chatId = ds.chatId;
@@ -165,7 +169,21 @@ export async function updateTurnReplyCard(
     },
   } satisfies import('../services/turn-reply-card.js').TurnReplyCardTransport;
   for (let attempt = 0; ; attempt++) {
-    try { return await store.update(key, event, transport); }
+    try {
+      const delivered = await store.update(key, event, transport);
+      if (resultBinding && delivered.delivered && delivered.record.finalDelivered && delivered.messageId) {
+        observeTurnResultDelivery(resultBinding, {
+          status: 'available', format: 'markdown', content: delivered.record.finalText!,
+          source: delivered.record.finalSource === 'explicit' ? 'explicit' : 'transcript',
+        }, {
+          channel: 'im', status: 'delivered', platform: 'lark', chatId: resultBinding.source.chatId,
+          ...(resultTarget && resultTarget.mode !== 'plain' ? { parentMessageId: resultTarget.rootMessageId } : {}),
+          messages: [{ kind: 'primary', messageId: delivered.messageId },
+            ...(delivered.record.overflowMessageId ? [{ kind: 'attachment' as const, messageId: delivered.record.overflowMessageId }] : [])],
+        });
+      }
+      return delivered;
+    }
     catch (error) {
       if (attempt >= 2 || error instanceof MessageWithdrawnError || store.read(key)?.withdrawn) throw error;
       await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 800 : 2000));

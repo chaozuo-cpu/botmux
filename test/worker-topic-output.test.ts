@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FrozenSessionReplyTarget } from '../src/types.js';
 
-const mocks = vi.hoisted(() => ({ request: vi.fn(), create: vi.fn(), reply: vi.fn(), patch: vi.fn() }));
+const mocks = vi.hoisted(() => ({ request: vi.fn(), create: vi.fn(), reply: vi.fn(), patch: vi.fn(), upload: vi.fn() }));
 vi.mock('@larksuiteoapi/node-sdk', () => ({ Client: class {
   request = mocks.request;
   im = { v1: {
-    message: { create: mocks.create, reply: mocks.reply, patch: mocks.patch },
+    message: { create: mocks.create, reply: mocks.reply, patch: mocks.patch }, file: { create: mocks.upload },
     chat: { get: async () => ({ code: 0, data: { chat_mode: 'group' } }) },
   } };
 } }));
@@ -22,6 +22,10 @@ import { config } from '../src/config.js';
 import { activeSessionKey, type DaemonSession } from '../src/core/types.js';
 import { __testOnly_activeSessions as activeSessions, __testOnly_sessionReply as sessionReply } from '../src/daemon.js';
 import { __testOnly_resetLarkGate } from '../src/im/lark/api-gate.js';
+import { getTurnResultRuntime, setTurnResultRuntime } from '../src/core/turn-result-runtime.js';
+import { observeTurnResultTerminal } from '../src/core/turn-result-session.js';
+import { TopicSendError } from '../src/cli/topic-send-guard.js';
+import { TurnReplyCardStore } from '../src/services/turn-reply-card.js';
 
 const APP = 'cli_worker_topic_output';
 const oldDataDir = config.session.dataDir;
@@ -42,9 +46,10 @@ beforeEach(() => {
   registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
     topicUnavailablePolicy: 'stop', replyCardMode: 'legacy' });
   ds = { larkAppId: APP, chatId: 'oc_source', scope: 'chat', chatType: 'group',
+    workerGeneration: 1,
     currentReplyTarget: { turnId: 'turn-new', rootMessageId: 'om_new' },
     session: { sessionId: 'sid_worker_output', larkAppId: APP, chatId: 'oc_source', scope: 'chat',
-      rootMessageId: 'om_source', cliId: 'claude-code', status: 'active', title: 'source', workingDir: data },
+      rootMessageId: 'om_source', cliId: 'claude-code', status: 'active', title: 'source', workingDir: data, workerGeneration: 1 },
   } as unknown as DaemonSession;
   activeSessions.set(activeSessionKey(ds), ds);
   initWorkerPool({ sessionReply, getSessionWorkingDir: () => data, getActiveCount: () => 1, closeSession: vi.fn() });
@@ -60,19 +65,127 @@ beforeEach(() => {
   mocks.patch.mockReset().mockResolvedValue({ code: 0 });
 });
 afterEach(() => {
+  setTurnResultRuntime(undefined);
   activeSessions.clear(); setActiveSessionsRegistry(originalRegistry);
   config.session.dataDir = oldDataDir;
   rmSync(home, { recursive: true, force: true });
   vi.unstubAllEnvs(); __testOnly_resetLarkGate();
 });
 
-function final(target?: FrozenSessionReplyTarget, owns: () => boolean = () => true): Promise<{ owned: boolean; messageId?: string }> {
+function final(target?: FrozenSessionReplyTarget, owns: () => boolean = () => true, content = 'answer'): Promise<{ owned: boolean; messageId?: string }> {
   return new Promise(resolve => deliverFinalOutput(ds, {
-    type: 'final_output', turnId: 'om_turn_old', content: 'answer', lastUuid: 'output-1',
+    type: 'final_output', turnId: 'om_turn_old', content, lastUuid: 'output-1',
   }, 'fixture', 0, (owned, messageId) => resolve({ owned, messageId }), owns, target));
 }
 
 describe('worker final-output topic transport', () => {
+  it('preserves the original explicit final instead of the subsequent transcript', async () => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
+      turnResults: { enabled: true }, replyCardMode: 'unified' });
+    const target = { mode: 'thread' as const, rootMessageId: 'om_source' };
+    await updateTurnReplyCard(ds, 'om_turn_old', {
+      kind: 'final', text: 'already delivered final', card: '{"schema":"2.0","body":{"elements":[{"tag":"markdown","content":"already delivered final"}]}}', source: 'explicit',
+    }, (body, type, uuid) => sessionReply('oc_source', body, type, APP, 'om_turn_old', { uuid, sourceSessionId: ds.session.sessionId, replyTarget: target }));
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId, turnId: 'om_turn_old', status: 'completed' }, 1);
+    const beforeFallback = getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old');
+    expect(beforeFallback?.status === 'ready' && beforeFallback.result.output.content).toBe('already delivered final');
+    await final(target, () => true, 'different transcript');
+    const lookup = getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old');
+    expect(lookup?.status === 'ready' && lookup.result.output.content).toBe('already delivered final');
+    expect(lookup?.status === 'ready' && lookup.result.output.source).toBe('explicit');
+  });
+
+  it('collects an acknowledged explicit record from another sender only after the native terminal', async () => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
+      turnResults: { enabled: true }, replyCardMode: 'unified' });
+    const store = new TurnReplyCardStore(config.session.dataDir);
+    const key = { larkAppId: APP, sessionId: ds.session.sessionId, turnId: 'om_turn_old' };
+    await store.prepare(key, { mode: 'unified', chatId: ds.chatId, rootId: 'om_source' });
+    await store.update(key, { kind: 'final', text: 'explicit sender final', source: 'explicit',
+      card: '{"schema":"2.0","body":{"elements":[{"tag":"markdown","content":"explicit sender final"}]}}' }, {
+      beforeEffect: () => {}, render: record => record.finalCard!, send: async () => 'om_explicit',
+      patch: async () => {}, isWithdrawn: () => false,
+    });
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old').status).toBe('not_found');
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId, turnId: 'om_turn_old', status: 'completed' }, 1);
+    const lookup = getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old');
+    expect(lookup?.status === 'ready' && lookup.result.output.content).toBe('explicit sender final');
+    expect(lookup?.status === 'ready' && lookup.result.deliveries[0].messages).toEqual([{ kind: 'primary', messageId: 'om_explicit' }]);
+  });
+
+  it('retains the acknowledged overflow when the final primary write remains unknown', async () => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
+      turnResults: { enabled: true }, replyCardMode: 'unified' });
+    mocks.upload.mockResolvedValue({ file_key: 'file_result' });
+    mocks.reply.mockImplementation(async input => {
+      if (input.data.msg_type === 'file') return { code: 0, data: { message_id: 'om_overflow' } };
+      throw new TopicSendError('TOPIC_SEND_BLOCKED', 'unknown primary response');
+    });
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId, turnId: 'om_turn_old', status: 'completed' }, 1);
+    {
+      await final({ mode: 'thread', rootMessageId: 'om_source' }, () => true, '完整答复'.repeat(20000));
+      const lookup = getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old');
+      expect(lookup?.status === 'ready' && lookup.result.output.status).toBe('unavailable');
+      expect(lookup?.status === 'ready' && lookup.result.deliveries[0]).toMatchObject({
+        status: 'partial', messages: [{ kind: 'attachment', messageId: 'om_overflow' }],
+      });
+    }
+  });
+
+  it('returns the complete long answer and the actual independent overflow attachment', async () => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
+      turnResults: { enabled: true }, replyCardMode: 'unified' });
+    mocks.upload.mockResolvedValue({ file_key: 'file_result' });
+    mocks.reply.mockImplementation(async input => ({ code: 0, data: { message_id: input.data.msg_type === 'file' ? 'om_overflow' : 'om_sent' } }));
+    const answer = '完整结果与证据'.repeat(6000);
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId, turnId: 'om_turn_old', status: 'completed' }, 1);
+    await final({ mode: 'thread', rootMessageId: 'om_source' }, () => true, answer);
+    const lookup = getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old');
+    expect(lookup?.status === 'ready' && lookup.result.output.content).toBe(answer);
+    expect(lookup?.status === 'ready' && lookup.result.deliveries[0].messages).toEqual([
+      { kind: 'primary', messageId: 'om_sent' }, { kind: 'attachment', messageId: 'om_overflow' },
+    ]);
+  });
+
+  it.each(['vc', 'isolated', 'adopted'])('does not collect a final for %s mode', async mode => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
+      turnResults: { enabled: true }, replyCardMode: 'legacy', ...(mode === 'isolated' ? { readIsolation: true } : {}) });
+    if (mode === 'vc') ds.session.vcMeetingReceiver = {} as never;
+    if (mode === 'adopted') ds.adoptedFrom = 'fixture';
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId, turnId: 'om_turn_old', status: 'completed' }, 1);
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old')).toEqual({ status: 'not_found' });
+  });
+  it.each(['terminal', 'delivery'])('returns exact ordinary final facts with %s first', async first => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
+      turnResults: { enabled: true }, replyCardMode: 'legacy' });
+    const terminal = () => observeTurnResultTerminal(ds, {
+      type: 'turn_terminal', sessionId: ds.session.sessionId, turnId: 'om_turn_old',
+      status: 'completed', completedAtMs: 1791849600000, durationMs: 1200,
+    }, 1);
+    if (first === 'terminal') terminal();
+    await final({ mode: 'thread', rootMessageId: 'om_source' });
+    if (first === 'delivery') terminal();
+    const lookup = getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old');
+    expect(lookup?.status).toBe('ready');
+    if (lookup?.status !== 'ready') throw new Error('Expected ready result');
+    expect(lookup.result.output).toEqual({ status: 'available', format: 'markdown', source: 'transcript', content: 'answer' });
+    expect(lookup.result.deliveries).toEqual([{
+      channel: 'im', status: 'delivered', platform: 'lark', chatId: 'oc_source', parentMessageId: 'om_source',
+      messages: [{ kind: 'primary', messageId: 'om_sent' }],
+    }]);
+  });
+
+  it('does not reinterpret an unavailable target as successful delivery', async () => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
+      turnResults: { enabled: true }, topicUnavailablePolicy: 'stop', replyCardMode: 'legacy' });
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_turn_old', status: 'completed' }, 1);
+    unavailable = true;
+    await final({ mode: 'thread', rootMessageId: 'om_source' });
+    const lookup = getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old');
+    expect(lookup?.status === 'ready' && lookup.result.deliveries[0].status).toBe('failed');
+    expect(lookup?.status === 'ready' && lookup.result.deliveries[0].messages).toEqual([]);
+  });
   it.each(['thread', 'quote'] as const)('blocks the withdrawn frozen %s target without changing destination', async mode => {
     unavailable = true;
     const result = await final({ mode, rootMessageId: 'om_source' });

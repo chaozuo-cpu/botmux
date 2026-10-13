@@ -48,7 +48,7 @@ Native completion is not delivery success. Content rejected by platform audit is
 
 The first version supports ordinary IM transcript finals with trusted inbound provenance and acknowledged publication in the current generation. Cross-process explicit finals, reused cards, and shapes without complete publication provenance remain unavailable/not ready. The feature does not infer content, generation, or all attachments from send markers, old card records, the latest message, or historical transcripts.
 
-Raw passthrough input (direct native CLI commands) does not record a trusted `sourceMessageId`, so these turns are not collected. Reply targets are not used to invent inbound provenance.
+Raw passthrough input (direct native CLI commands) sent to an existing session does not record a trusted `sourceMessageId`, so those turns are not collected. Initial cold-start passthrough can carry the actual inbound message provenance and remains subject to the same mode, ownership, and publication checks. Reply targets are not used to invent inbound provenance.
 
 Meeting receivers, document comments, private replies, sandbox/read isolation, silent schedules, adopted sessions, and headless/HTTP turns are not generic content-export paths. Existing trigger, headless, and workflow APIs remain unchanged.
 

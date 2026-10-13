@@ -115,6 +115,51 @@ describe('worker final-output topic transport', () => {
     expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old').status).toBe('ready');
   });
 
+  it.each(['vc', 'headless'])('preserves ordinary results after an unadmitted %s session terminates', async mode => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code', turnResults: { enabled: true } });
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_turn_old', status: 'completed' }, 1);
+    await final({ mode: 'thread', rootMessageId: 'om_source' });
+    const other = {
+      ...ds, chatId: 'oc_unsupported', session: { ...ds.session, sessionId: 'sid_unsupported', chatId: 'oc_unsupported',
+        ...(mode === 'vc' ? { vcMeetingReceiver: {} as never } : { headless: true }) },
+    } as DaemonSession;
+    activeSessions.set(activeSessionKey(other), other);
+    observeTurnResultTerminal(other, { type: 'turn_terminal', sessionId: other.session.sessionId,
+      turnId: 'om_never_admitted', status: 'completed', outputDisposition: 'nothing_to_send' }, 1);
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old')).toMatchObject({
+      status: 'ready', result: { output: { content: 'answer' } },
+    });
+    expect(getTurnResultRuntime()?.read(APP, other.session.sessionId, 'om_never_admitted')).toEqual({ status: 'not_found' });
+  });
+
+  it('preserves an earlier ready turn when a new generation terminates an unsupported turn', async () => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code', turnResults: { enabled: true } });
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_turn_old', status: 'completed' }, 1);
+    await final({ mode: 'thread', rootMessageId: 'om_source' });
+    ds.workerGeneration = 2;
+    ds.session.workerGeneration = 2;
+    ds.session.headless = true;
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_new_headless', dispatchAttempt: 1, status: 'completed', outputDisposition: 'nothing_to_send' }, 2);
+    delete ds.session.headless;
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old').status).toBe('ready');
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_new_headless', 1)).toEqual({ status: 'not_found' });
+  });
+
+  it('rejects terminal facts when daemon and persisted worker generations disagree', () => {
+    registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code', turnResults: { enabled: true } });
+    ds.workerGeneration = 2;
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_turn_old', status: 'completed', outputDisposition: 'nothing_to_send' }, 1);
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old')).toEqual({ status: 'not_found' });
+    ds.workerGeneration = 1;
+    observeTurnResultTerminal(ds, { type: 'turn_terminal', sessionId: ds.session.sessionId,
+      turnId: 'om_turn_old', status: 'completed', outputDisposition: 'nothing_to_send' }, 1);
+    expect(getTurnResultRuntime()?.read(APP, ds.session.sessionId, 'om_turn_old').status).toBe('ready');
+  });
+
   it('retains the acknowledged final attachment after primary content audit rejection', async () => {
     registerBot({ larkAppId: APP, larkAppSecret: 'test-secret', cliId: 'claude-code',
       turnResults: { enabled: true }, replyCardMode: 'unified' });

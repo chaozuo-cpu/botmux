@@ -152,10 +152,6 @@ import { emitHookEvent, emitHookEventLocal, evaluatePromptGate, HOOK_EVENTS, typ
 import { setSessionLifecycleShutdown } from './services/session-lifecycle-hooks.js';
 import { setTurnResultRuntime } from './core/turn-result-runtime.js';
 
-export function useOrdinaryOutputDelivery(): void {
-  setDurableBridgeFinalOutputHandler(undefined);
-  setDurableSessionSendHandler(null);
-}
 import { setUsageLedgerPricingResolver, setUsageLedgerRecordSink } from './services/usage-ledger.js';
 import { trackBudgetSpend, formatBudgetAlert } from './services/budget-tracker.js';
 import { resolvePricingConfig } from './services/model-pricing.js';
@@ -193,6 +189,11 @@ import { entryNeedsContactResolve } from './setup/bot-config-editor.js';
 import { invalidWorkingDirs } from './utils/working-dir.js';
 import { validateWorkingDir } from './core/working-dir.js';
 import type { DaemonToWorker, LarkAttachment, LarkMessage } from './types.js';
+
+export function useOrdinaryOutputDelivery(): void {
+  setDurableBridgeFinalOutputHandler(undefined);
+  setDurableSessionSendHandler(null);
+}
 
 interface ScheduleRunLogErrorDetails {
   errorCode: string;

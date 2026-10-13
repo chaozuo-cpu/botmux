@@ -16,8 +16,12 @@ export function createTurnResultRuntime(deps: TurnResultRuntimeDeps) {
   const pending = new Set<ReturnType<typeof setTimeout>>();
   const allowed = (binding: TurnResultBinding): boolean => {
     if (closed) return false;
-    if (!deps.enabled(binding.ref.botId) || !deps.eligible(binding)) {
+    if (!deps.enabled(binding.ref.botId)) {
       deps.store.clearBot(binding.ref.botId);
+      return false;
+    }
+    if (!deps.eligible(binding)) {
+      deps.store.forget(binding.ref);
       return false;
     }
     return deps.owns(binding);
@@ -71,7 +75,7 @@ export function createTurnResultRuntime(deps: TurnResultRuntimeDeps) {
       const lookup = deps.store.read(ref);
       const binding = deps.store.readBinding(ref);
       if (binding && !deps.eligible(binding)) {
-        deps.store.clearBot(botId);
+        deps.store.forget(ref);
         return { status: 'unavailable', reason: 'unsupported_mode' };
       }
       return lookup;
@@ -84,6 +88,9 @@ export function createTurnResultRuntime(deps: TurnResultRuntimeDeps) {
       bots.clear();
     },
     clearBot(botId: string): void { deps.store.clearBot(botId); },
+    forget(botId: string, sessionId: string, turnId: string, dispatchAttempt?: number): void {
+      deps.store.forget({ botId, sessionId, turnId, ...(dispatchAttempt === undefined ? {} : { dispatchAttempt }) });
+    },
   };
 }
 

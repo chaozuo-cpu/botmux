@@ -169,6 +169,12 @@ export class TurnResultStore {
     return binding ? snapshot(binding) : undefined;
   }
 
+  forget(ref: TurnResult['ref']): void {
+    let key: string;
+    try { key = keyFor(ref); } catch { return; }
+    this.entries.delete(key);
+  }
+
   clearBot(botId: string): void {
     for (const [key, entry] of this.entries) if (entry.binding.ref.botId === botId) this.entries.delete(key);
   }

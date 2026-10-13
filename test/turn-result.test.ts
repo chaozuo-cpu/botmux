@@ -184,6 +184,25 @@ describe('ordinary turn result snapshots', () => {
     expect(store.read(binding.ref)).toEqual({ status: 'not_found' });
     expect(store.read(other.ref).status).toBe('ready');
   });
+
+  it('forgets only an exact reference and ignores invalid or missing references', () => {
+    const store = new TurnResultStore();
+    const otherSession = { ...binding, ref: { ...binding.ref, sessionId: 'session_other' } };
+    const otherAttempt = { ...binding, ref: { ...binding.ref, dispatchAttempt: 1 } };
+    complete(store);
+    complete(store, otherSession);
+    complete(store, otherAttempt);
+    store.forget({ ...binding.ref, dispatchAttempt: -1 });
+    store.forget({ ...binding.ref, turnId: '' });
+    store.forget({ ...binding.ref, turnId: 'om_missing' });
+    expect(store.read(binding.ref).status).toBe('ready');
+    store.forget(binding.ref);
+    expect(store.read(binding.ref)).toEqual({ status: 'not_found' });
+    expect(store.read(otherSession.ref).status).toBe('ready');
+    expect(store.read(otherAttempt.ref).status).toBe('ready');
+    store.forget(binding.ref);
+    expect(store.read(otherSession.ref).status).toBe('ready');
+  });
 });
 
 describe('authorized turn result observers', () => {
@@ -256,6 +275,77 @@ describe('authorized turn result observers', () => {
     runtime.terminal(binding, execution);
     allowed = true;
     expect(runtime.read(binding.ref.botId, binding.ref.sessionId, binding.ref.turnId)).toEqual({ status: 'not_found' });
+  });
+
+  it.each(['begin', 'terminal', 'delivery'] as const)(
+    'preserves another session when %s rejects an unadmitted binding',
+    observation => {
+      const rejected = { ...binding, ref: { ...binding.ref, sessionId: 'session_unsupported', turnId: 'synthetic_turn' } };
+      const runtime = createTurnResultRuntime({
+        store: new TurnResultStore(), enabled: () => true,
+        eligible: current => current.ref.sessionId !== rejected.ref.sessionId, owns: () => true,
+      });
+      runtime.begin(binding);
+      runtime.delivery(binding, output, receipt);
+      runtime.terminal(binding, execution);
+      if (observation === 'begin') runtime.begin(rejected);
+      else if (observation === 'terminal') runtime.terminal(rejected, execution);
+      else runtime.delivery(rejected, output, receipt);
+      expect(runtime.read(binding.ref.botId, binding.ref.sessionId, binding.ref.turnId)).toMatchObject({
+        status: 'ready', result: { output },
+      });
+      expect(runtime.read(rejected.ref.botId, rejected.ref.sessionId, rejected.ref.turnId)).toEqual({ status: 'not_found' });
+      runtime.close();
+    },
+  );
+
+  it.each(['terminal', 'delivery', 'read'] as const)(
+    'withdraws only the ineligible attempt on %s',
+    observation => {
+      const otherAttempt = { ...binding, ref: { ...binding.ref, dispatchAttempt: 1 } };
+      const otherSession = { ...binding, ref: { ...binding.ref, sessionId: 'session_other' } };
+      let revoked = false;
+      const runtime = createTurnResultRuntime({
+        store: new TurnResultStore(), enabled: () => true, owns: () => true,
+        eligible: current => !revoked || current.ref.sessionId !== binding.ref.sessionId
+          || current.ref.dispatchAttempt !== undefined,
+      });
+      for (const current of [binding, otherAttempt, otherSession]) {
+        runtime.begin(current);
+        runtime.delivery(current, output, receipt);
+        runtime.terminal(current, execution);
+      }
+      revoked = true;
+      if (observation === 'terminal') runtime.terminal(binding, execution);
+      else if (observation === 'delivery') runtime.delivery(binding, output, receipt);
+      else expect(runtime.read(binding.ref.botId, binding.ref.sessionId, binding.ref.turnId)).toEqual({
+        status: 'unavailable', reason: 'unsupported_mode',
+      });
+      revoked = false;
+      expect(runtime.read(binding.ref.botId, binding.ref.sessionId, binding.ref.turnId)).toEqual({ status: 'not_found' });
+      expect(runtime.read(otherAttempt.ref.botId, otherAttempt.ref.sessionId, otherAttempt.ref.turnId, 1).status).toBe('ready');
+      expect(runtime.read(otherSession.ref.botId, otherSession.ref.sessionId, otherSession.ref.turnId).status).toBe('ready');
+      runtime.close();
+    },
+  );
+
+  it('withdraws all sessions when bot enablement is revoked', () => {
+    let enabled = true;
+    const otherSession = { ...binding, ref: { ...binding.ref, sessionId: 'session_other' } };
+    const store = new TurnResultStore();
+    const runtime = createTurnResultRuntime({
+      store, enabled: () => enabled, eligible: () => true, owns: () => true,
+    });
+    for (const current of [binding, otherSession]) {
+      runtime.begin(current);
+      runtime.delivery(current, output, receipt);
+      runtime.terminal(current, execution);
+    }
+    enabled = false;
+    runtime.terminal(binding, execution);
+    expect(store.read(binding.ref)).toEqual({ status: 'not_found' });
+    expect(store.read(otherSession.ref)).toEqual({ status: 'not_found' });
+    runtime.close();
   });
 
   it('reports an observer deadline without changing the completed result', async () => {

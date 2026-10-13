@@ -39,7 +39,7 @@ export function turnResultBinding(
   workerGeneration = session.session.workerGeneration,
 ): TurnResultBinding | undefined {
   if (!turnResultModeAllowed(session)) {
-    getTurnResultRuntime()?.clearBot(session.larkAppId);
+    getTurnResultRuntime()?.forget(session.larkAppId, session.session.sessionId, turnId, dispatchAttempt);
     return undefined;
   }
   if (!turnResultSessionEligible(session, turnId, dispatchAttempt)) return undefined;
